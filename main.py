@@ -1,76 +1,119 @@
 import requests
 import json
-import datetime
-from datetime import timedelta
+import redis
+from datetime import datetime
+from typing import Any
+# import pytz
 
-# URL = "https://app.yasno.ua/api/blackout-service/public/shutdowns/probable-outages?regionId=25&dsoId=902"
 URL = "https://app.yasno.ua/api/blackout-service/public/shutdowns/regions/25/dsos/902/planned-outages"
+master_service_name = 'myredis'
+sentinels = [
+    ('192.168.0.5',  26379),
+    ('192.168.0.41', 26379),
+]
+data = None
+ex = 1200
+# master_address = client.discover_master(master_service_name) # возвращает(ip, port) клиента redis
 
-def save_to_file(data, filename="blackout_data.json"):
-    with open(filename, 'w') as json_file:
-        json.dump(data, json_file, indent=4) # 'indent=4' for pretty-printing
+def read_url():
+    # print("loading URL")
+    data = json.loads(requests.get(URL).text)
+    write_redis(data)
+    return data
 
-def load_from_file(filename="blackout_data.json"):
-    with open(filename, 'r') as json_file:
-        return json.load(json_file)
-    
+def write_redis(data):
+    client = redis.Sentinel(sentinels, socket_timeout=0.1, )
+    master = client.master_for('myredis', redis_class=redis.Redis)
+    master.set("yasno_data", json.dumps(data,), ex=ex)
+
+def read_redis()->dict[str, Any]|None:
+    # print("loading Redis")
+    client = redis.Sentinel(sentinels, socket_timeout=0.1, )
+    master = client.master_for('myredis', redis_class=redis.Redis)
+    data = master.get("yasno_data")
+    return json.loads(data) if data else None # type: ignore
+
+def get_data()->dict[str, Any]|None:
+    data = read_redis()
+    if not data:
+        data = read_url()
+    return data # type: ignore
+
+def get_date(date) -> str:
+    date = datetime.strptime(date, "%Y-%m-%dT%H:%M:%S%z")
+    date = datetime.strftime(date,"%d.%m.%Y")
+    return date
+
+def get_datetime(date) -> str:
+    dt_local = datetime.fromisoformat(date).astimezone()
+    dt_local = datetime.strftime(dt_local, "%d.%m.%Y %H:%M")    
+    return dt_local
+
 def mm_to_hhmm(minutes: int) -> str:
     hours = minutes // 60
     mins = minutes % 60
     return f"{hours:02}:{mins:02}"
 
-def fetch_blackout_data(url):
-    response = requests.get(url)
-    response.raise_for_status()  # Raise an error for bad responses
-    json_data = response.json()
-    save_to_file(json_data)
-    return json_data
+def get_slot_data(slots, status):
+    # print(status)
+    if status == "ScheduleApplies":
+        cnt = 0
+        for slot in slots:
+            if slot.get("type") == "NotPlanned":
+                continue
+            print(f" 🌑 Отключение: {mm_to_hhmm(slot.get('start'))} - {mm_to_hhmm(slot.get('end'))}")
+            cnt += 1
+        if cnt == 0:
+            print(" 💡 Без отключений!")
+    if status == "WaitingForSchedule":
+        print(" ⏳ График ожидается...")
 
+def main():
+    data = get_data() 
+    # updateOn = data.get("2.1").get("updatedOn")
+    group = data.get("2.1") # type: ignore
+
+    today_shedule = group.get("today")           # type: ignore
+    tomorrow_shedule = group.get("tomorrow")           # type: ignore
+    
+    today = today_shedule.get("date")       # type: ignore
+    tomorrow = tomorrow_shedule.get("date")       # type: ignore
+    
+    today = get_date(today)
+    tomorrow = get_date(tomorrow)
+    
+    today_status = today_shedule.get("status")
+    tomorrow_status = tomorrow_shedule.get("status")
+
+
+    today_slots = group.get("today").get("slots")       # type: ignore
+    tomorrow_slots = group.get("tomorrow").get("slots") # type: ignore
+    
+    # tomorrow = group.get("tomorrow").get("date")        # type: ignore
+    
+    
+    updated = group.get("updatedOn")                    # type: ignore
+    updated = get_datetime(updated)
+
+    print("==================================")
+    print("   График планових отключений")
+    print("----------------------------------")
+    print(f"   Сегодня ({today}):")
+    get_slot_data(today_slots, today_status)
+    print(f"   Завтра  ({tomorrow}):")
+    get_slot_data(tomorrow_slots, tomorrow_status)
+    print(f"   Обновлено в {updated}")
+    print("==================================")
+
+
+    # print(group)
+    # print(today)
+    # print(tomorrow)
+    # print(updated)
+    # print(today_status)
+    # print(tomorrow_status)
+    # print(group.get("tomorrow"))
 
 if __name__ == "__main__":
-    # Fetch and save fresh data (can be commented out if using local file only)
-    fetch_blackout_data(URL)
-    data = load_from_file()
-    today_slots = data.get("2.1").get("today").get("slots")
-    tomorrow_slots = data.get("2.1").get("tomorrow").get("slots")
-    date = data.get("2.1").get("today").get("date")
-    date = datetime.datetime.fromisoformat(date)
-    tomorrow_date = (date + timedelta(hours=24)).strftime("%d/%m/%Y")
-    date = date.strftime("%d/%m/%Y")
-    now = datetime.datetime.now().strftime("%d/%m/%Y")
-    # print(f"{date=} {now=}")
-    # print("Совпадает:", date == now)
-    updatedOn = data.get("2.1").get("updatedOn")
-    updatedOn = datetime.datetime.fromisoformat(updatedOn)
-    updatedOn = updatedOn + timedelta(hours=3)
-    updatedOn = updatedOn.strftime("%d/%m/%Y %H:%M")
-    
-    print("======================================")
-    print("Дата планових отключений")
+    main()
 
-    print(f"Сегодня ({date}):")
-    cnt = 0
-    for slot in today_slots:
-        if slot.get("type") == "NotPlanned":
-            continue
-        print(f" 🌑 Отключение: {mm_to_hhmm(slot.get('start'))} - {mm_to_hhmm(slot.get('end'))}")
-        cnt += 1
-    if cnt == 0:
-        print(" 💡 Без отключений!")
-
-
-    print(f"Завтра ({tomorrow_date}):")
-    cnt = 0
-    for slot in tomorrow_slots:
-        if slot.get("type") == "NotPlanned":
-            continue
-        print(f" 🌑 Отключение: {mm_to_hhmm(slot.get('start'))} - {mm_to_hhmm(slot.get('end'))}")
-        cnt += 1
-    if cnt == 0:
-        print(" 💡 Без отключений!")
-
-    print(f"Обновлено в {updatedOn}")
-    print("======================================")
-
-    # print(mm_to_hhmm(870))   # Example usage
-    # print(mm_to_hhmm(1140))  # Example usage
