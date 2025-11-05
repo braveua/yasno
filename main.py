@@ -12,7 +12,7 @@ sentinels = [
     ('192.168.0.41', 26379),
 ]
 data = None
-ex = 1200
+ex = 600
 # master_address = client.discover_master(master_service_name) # возвращает(ip, port) клиента redis
 
 def read_url():
