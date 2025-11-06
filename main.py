@@ -3,20 +3,17 @@ import json
 import redis
 from datetime import datetime
 from typing import Any
-# import pytz
 
 URL = "https://app.yasno.ua/api/blackout-service/public/shutdowns/regions/25/dsos/902/planned-outages"
 master_service_name = 'myredis'
 sentinels = [
-    ('192.168.0.5',  26379),
-    ('192.168.0.41', 26379),
+    ("localhost", 26379),
 ]
 data = None
-ex = 600
+ex = 60
 # master_address = client.discover_master(master_service_name) # возвращает(ip, port) клиента redis
 
 def read_url():
-    # print("loading URL")
     data = json.loads(requests.get(URL).text)
     write_redis(data)
     return data
@@ -24,12 +21,21 @@ def read_url():
 def write_redis(data):
     client = redis.Sentinel(sentinels, socket_timeout=0.1, )
     master = client.master_for('myredis', redis_class=redis.Redis)
+    # master_address = client.discover_master(master_service_name)
+    # print(f"{master_address=}")
+    # slave_address = client.discover_slaves(service_name=master_service_name)
+    # print(f"{slave_address=}")
     master.set("yasno_data", json.dumps(data,), ex=ex)
 
 def read_redis()->dict[str, Any]|None:
-    # print("loading Redis")
     client = redis.Sentinel(sentinels, socket_timeout=0.1, )
     master = client.master_for('myredis', redis_class=redis.Redis)
+
+    master_address = client.discover_master(master_service_name)
+    # print(f"{master_address=}")
+    slave_address = client.discover_slaves(service_name=master_service_name)
+    print(f"Redis={master_address},{slave_address}")
+
     data = master.get("yasno_data")
     return json.loads(data) if data else None # type: ignore
 
@@ -55,7 +61,6 @@ def mm_to_hhmm(minutes: int) -> str:
     return f"{hours:02}:{mins:02}"
 
 def get_slot_data(slots, status):
-    # print(status)
     if status == "ScheduleApplies":
         cnt = 0
         for slot in slots:
@@ -85,12 +90,8 @@ def main():
     today_status = today_shedule.get("status")
     tomorrow_status = tomorrow_shedule.get("status")
 
-
     today_slots = group.get("today").get("slots")       # type: ignore
     tomorrow_slots = group.get("tomorrow").get("slots") # type: ignore
-    
-    # tomorrow = group.get("tomorrow").get("date")        # type: ignore
-    
     
     updated = group.get("updatedOn")                    # type: ignore
     updated = get_datetime(updated)
@@ -105,14 +106,6 @@ def main():
     print(f"   Обновлено в {updated}")
     print("==================================")
 
-
-    # print(group)
-    # print(today)
-    # print(tomorrow)
-    # print(updated)
-    # print(today_status)
-    # print(tomorrow_status)
-    # print(group.get("tomorrow"))
 
 if __name__ == "__main__":
     main()
